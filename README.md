@@ -1,1 +1,1 @@
-# reportportal-rt-processor
+# kafkavents-reportportal
