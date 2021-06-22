@@ -1,0 +1,8 @@
+{
+    "bootstrap.servers": "<YOUR KAFKA SERVER URL HERE>",
+    "group.id": "<YOUR GROUP ID HERE>",
+    "sasl.mechanism": "PLAIN",
+    "security.protocol": "SASL_SSL", 
+    "sasl.username": "<USERNAME>",
+    "sasl.password": "<PASSWORD>"
+}

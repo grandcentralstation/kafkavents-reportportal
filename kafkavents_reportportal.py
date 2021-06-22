@@ -41,14 +41,12 @@ class KafkaventsReportPortalBridge(object):
         kafkaconf['group.id'] = 'kafkavents_reportportal'
         self.kafkacons = Consumer(kafkaconf)
         self.kafkacons.subscribe(['kafkavents'])
+
         # setup reportportal
-        self.rp_host = os.getenv('RP_HOST',
-                                 "https://demo.reportportal.io")
-        self.rp_project = os.getenv('RP_PROJECT',
-                                    "default_personal")
-        self.rp_token = os.getenv('RP_TOKEN',
-                                  "<API TOKEN GOES HERE")
-        #TODO: remove token and replace with None (add check to exit if None)
+        self.rp_host = os.getenv('RP_HOST', None)
+        self.rp_project = os.getenv('RP_PROJECT', None)
+        self.rp_token = os.getenv('RP_TOKEN', None)
+
         self.service = ReportPortalService(endpoint=self.rp_host,
                                             project=self.rp_project,
                                             token=self.rp_token)
