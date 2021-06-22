@@ -14,6 +14,7 @@
 # along with this software. If not, see <http://www.gnu.org/licenses/>.
 #
 import json
+import os
 from time import time
 
 from confluent_kafka import Consumer
@@ -24,10 +25,16 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
+def timestamp():
+    return str(int(time() * 1000))
+
+
 class KafkaventsReportPortalBridge(object):
     def __init__(self):
         # Setup Kafka
-        fileh = open('kafka_conf.json')
+        #use OpenShift secrets to put this in place then point to it here
+        kafka_file = os.getenv('KAFKA_CONF', 'kafka_conf.json')
+        fileh = open(kafka_file)
         kafkaconf = json.load(fileh)
         fileh.close()
 
@@ -35,10 +42,13 @@ class KafkaventsReportPortalBridge(object):
         self.kafkacons = Consumer(kafkaconf)
         self.kafkacons.subscribe(['kafkavents'])
         # setup reportportal
-        self.rp_host = "https://demo.reportportal.io"
-        self.rp_project = "default_personal"
-        self.rp_token = "183daf89-7d5a-4d3f-ad77-e6b7a8e64ef8"
-
+        self.rp_host = os.getenv('RP_HOST',
+                                 "https://demo.reportportal.io")
+        self.rp_project = os.getenv('RP_PROJECT',
+                                    "default_personal")
+        self.rp_token = os.getenv('RP_TOKEN',
+                                  "<API TOKEN GOES HERE")
+        #TODO: remove token and replace with None (add check to exit if None)
         self.service = ReportPortalService(endpoint=self.rp_host,
                                             project=self.rp_project,
                                             token=self.rp_token)
@@ -79,15 +89,15 @@ class KafkaventsReportPortalBridge(object):
                 parent_id = self.get_parent_id(domain_path)
                 #print(f'CREATING DOMAIN {domain_path} with parent {parent_id}')
                 if counter == 0:
-                    # for whatever reason, RP requires parent_uuid when parent is launch
+                    # RP requires parent_uuid when parent is launch
                     suite_id = self.service.start_test_item(parent_uuid=parent_id,
                                                             name=domaintets[counter],
-                                                            start_time=str(int(time() * 1000)),
+                                                            start_time=timestamp(),
                                                             item_type="SUITE")
                 else:
                     suite_id = self.service.start_test_item(parent_item_id=parent_id,
                                                             name=domaintets[counter],
-                                                            start_time=str(int(time() * 1000)),
+                                                            start_time=timestamp(),
                                                             item_type="SUITE")
                 self.domain_paths[domain_path] = suite_id
                 #print(f'CREATED DOMAIN {domain_path} with ID {suite_id} and parent {parent_id}')
@@ -111,7 +121,8 @@ class KafkaventsReportPortalBridge(object):
                     packet_num = kv_header.get('packetnum', None)
                     kv_type = kv_header.get('type', None)
                     kv_event = self.get_packet_event(event_data)
-                    print(f"kafkavent session {sessionid} packet # {packet_num}: type {kv_type}")
+                    print(f"kafkavent session {sessionid} "
+                          "packet # {packet_num}: type {kv_type}")
                     print(kv_event)
 
                     if kv_type == "sessionstart":
@@ -120,7 +131,7 @@ class KafkaventsReportPortalBridge(object):
                         print(f"Starting launch: {launch_name}")
                         # Start launch.
                         self.launch = self.service.start_launch(name=launch_name,
-                                                      start_time=str(int(time() * 1000)),
+                                                      start_time=timestamp(),
                                                       description="My test launch")
                         #print(f'LAUNCH: {self.launch}')
                         self.domain_paths[sessionid] = self.launch
@@ -130,7 +141,7 @@ class KafkaventsReportPortalBridge(object):
                         print(f"Ending launch: {launch_name}")
                         # Finish launch.
                         self.service.finish_launch(launch=self.launch,
-                                                   end_time=str(int(time() * 1000)))
+                                                   end_time=timestamp())
                         print(self.domain_paths)
 
                     if kv_type == "testresult":
@@ -147,13 +158,15 @@ class KafkaventsReportPortalBridge(object):
                         item_id = self.service.start_test_item(parent_item_id=parent_id,
                                                                name=name,
                                                                description=kv_name,
-                                                               start_time=str(int(time() * 1000)),
+                                                               start_time=timestamp(),
                                                                item_type="TEST",
                                                                parameters={"key1": "val1",
                                                                            "key2": "val2"})
                         print(f'ITEM: {item_id}')
                         # Finish test item Report Portal versions below 5.0.0.
-                        self.service.finish_test_item(item_id=item_id, end_time=str(int(time() * 1000)), status=kv_status)
+                        self.service.finish_test_item(item_id=item_id,
+                                                      end_time=timestamp(),
+                                                      status=kv_status)
         except KeyboardInterrupt:
             pass
         finally:
