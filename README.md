@@ -8,3 +8,6 @@ podman run -it --env-file=kafkavents/env.bash  \
 --rm -v /path/to/kafkavents-reportportal/kafkavents:/usr/local/etc/kafkavents:Z \
 localhost/kafkavents-reportportal
 ```
+
+[![Docker Repository on Quay](https://quay.io/repository/loadtheaccumulator/kafkavents-reportportal/status "Docker Repository on Quay")](https://quay.io/repository/loadtheaccumulator/kafkavents-reportportal)
+
