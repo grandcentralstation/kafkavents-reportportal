@@ -33,7 +33,8 @@ class KafkaventsReportPortalBridge(object):
     def __init__(self):
         # Setup Kafka
         #use OpenShift secrets to put this in place then point to it here
-        kafka_file = os.getenv('KAFKA_CONF', 'kafka_conf.json')
+        kafka_file = os.getenv('KAFKA_CONF',
+                               '/usr/local/etc/kafkavents/kafka.json')
         fileh = open(kafka_file)
         kafkaconf = json.load(fileh)
         fileh.close()
