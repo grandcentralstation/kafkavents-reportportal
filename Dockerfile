@@ -1,5 +1,8 @@
 FROM registry.access.redhat.com/ubi8/ubi-init
-MAINTAINER loadtheaccumulator@gmail.com
+LABEL maintainer jholloway@redhat.com
+LABEL io.k8s.description A bridge between Kafkavents OpenResults to ReportPortal API
+LABEL io.openshift.wants kafka,reportportal
+LABEL io.openshift.non-scalable true
 
 RUN yum -y install python3-pip git gcc platform-python-devel
 RUN pip3 install --upgrade pip

@@ -17,7 +17,7 @@ import json
 import os
 from time import time
 
-from confluent_kafka import Consumer
+from confluent_kafka import Consumer, TopicPartition
 from reportportal_client import ReportPortalService
 import urllib3
 
@@ -39,9 +39,13 @@ class KafkaventsReportPortalBridge(object):
         kafkaconf = json.load(fileh)
         fileh.close()
 
-        kafkaconf['group.id'] = 'kafkavents_reportportal'
+        kafkaconf['client.id'] = 'kafkavents-reportportal'
         self.kafkacons = Consumer(kafkaconf)
         self.kafkacons.subscribe(['kafkavents'])
+        #TODO: unwire kafkavents topic
+        _, self.end_offset = self.kafkacons.get_watermark_offsets(TopicPartition('kafkavents', 0))
+        #print(f'TOPIC INFO: {topic_info}')
+        self.kafkacons.assign([TopicPartition('kafkavents', 0, self.end_offset)])
 
         # setup reportportal
         self.rp_host = os.getenv('RP_HOST', None)
@@ -103,7 +107,7 @@ class KafkaventsReportPortalBridge(object):
             counter = counter + 1
 
     def listen(self):
-        print('Listening...')
+        print(f'Listening at offset {self.end_offset} ...')
         try:
             while True:
                 kevent = self.kafkacons.poll(1.0)
@@ -113,6 +117,11 @@ class KafkaventsReportPortalBridge(object):
                 elif kevent.error():
                     print('error: {}'.format(kevent.error()))
                 else:
+                    topic = kevent.topic()
+                    message_offset = kevent.offset()
+                    partition = kevent.partition()
+                    print(f'TOPIC: {topic} PARTITION: {partition} '
+                          f'OFFSET: {message_offset}')
                     # Something happened. Check event.
                     event_data = json.loads(kevent.value())
                     kv_header = self.get_packet_header(event_data)
@@ -125,6 +134,7 @@ class KafkaventsReportPortalBridge(object):
                     print(kv_event)
 
                     if kv_type == "sessionstart":
+                        #TODO: mark start of session to prevent mid-sess fails
                         self.domain_paths = {}
                         launch_name = kv_event.get('name')
                         print(f"Starting launch: {launch_name}")
