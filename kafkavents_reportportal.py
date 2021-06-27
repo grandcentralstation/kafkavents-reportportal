@@ -31,6 +31,8 @@ def timestamp():
 
 class KafkaventsReportPortalBridge(object):
     def __init__(self):
+        self.session_in_progress = False
+
         # Setup Kafka
         #use OpenShift secrets to put this in place then point to it here
         kafka_file = os.getenv('KAFKA_CONF',
@@ -39,13 +41,22 @@ class KafkaventsReportPortalBridge(object):
         kafkaconf = json.load(fileh)
         fileh.close()
 
+        # SETUP KV
+        self.topic = os.getenv('KV_TOPIC', 'kafkavents')
+
         kafkaconf['client.id'] = 'kafkavents-reportportal'
+        #kafkaconf['enable.auto.commit'] = "true"
         self.kafkacons = Consumer(kafkaconf)
-        self.kafkacons.subscribe(['kafkavents'])
+        self.kafkacons.subscribe([self.topic])
         #TODO: unwire kafkavents topic
         _, self.end_offset = self.kafkacons.get_watermark_offsets(TopicPartition('kafkavents', 0))
-        #print(f'TOPIC INFO: {topic_info}')
-        self.kafkacons.assign([TopicPartition('kafkavents', 0, self.end_offset)])
+        print(f'READ OFFSET: {self.end_offset}')
+        if os.getenv('KAFKA_OFFSET', None) is not None:
+            self.end_offset = int(os.getenv('KAFKA_OFFSET'))
+        self.kafkacons.assign([TopicPartition('kafkavents', partition=0, offset=self.end_offset)])
+        self.kafkacons.commit()
+
+
 
         # setup reportportal
         self.rp_host = os.getenv('RP_HOST', None)
@@ -58,6 +69,9 @@ class KafkaventsReportPortalBridge(object):
         self.service.session.verify = False
         self.launch = None
         self.domain_paths = {}
+        self.kv = {}
+        self.kv['domain_paths'] = {}
+        self.kv['launch'] = None
 
     @staticmethod
     def get_packet_header(packet):
@@ -71,14 +85,14 @@ class KafkaventsReportPortalBridge(object):
         domainlist = domain_path.split('.')
 
         if len(domainlist) == 1:
-            #print('using launch id')
-            parent_id = self.launch
+            print('using launch id')
+            parent_id = self.kv['launch']
         else:
-            #print('looking up id')
+            print('looking up id')
             parentlist = domainlist[:-1]
             parent_domainpath = '.'.join(parentlist)
             parent_id = self.domain_paths[parent_domainpath]
-        #print(f'Domain {domain_path}, Parent {parent_id}')
+        print(f'Domain {domain_path}, Parent {parent_id}')
         return parent_id
 
     def create_missing_domainpaths(self, domain):
@@ -120,8 +134,9 @@ class KafkaventsReportPortalBridge(object):
                     topic = kevent.topic()
                     message_offset = kevent.offset()
                     partition = kevent.partition()
-                    print(f'TOPIC: {topic} PARTITION: {partition} '
+                    print(f'\nTOPIC: {topic} PARTITION: {partition} '
                           f'OFFSET: {message_offset}')
+                    self.kv['offset'] = message_offset
                     # Something happened. Check event.
                     event_data = json.loads(kevent.value())
                     kv_header = self.get_packet_header(event_data)
@@ -130,30 +145,62 @@ class KafkaventsReportPortalBridge(object):
                     kv_type = kv_header.get('type', None)
                     kv_event = self.get_packet_event(event_data)
                     print(f"kafkavent session {sessionid} "
-                          "packet # {packet_num}: type {kv_type}")
+                          f"packet # {packet_num}: type {kv_type}")
                     print(kv_event)
 
                     if kv_type == "sessionstart":
                         #TODO: mark start of session to prevent mid-sess fails
+                        print('SESSION START')
                         self.domain_paths = {}
+                        self.kv['offset_start'] = message_offset
+
                         launch_name = kv_event.get('name')
                         print(f"Starting launch: {launch_name}")
                         # Start launch.
-                        self.launch = self.service.start_launch(name=launch_name,
+                        self.kv['launch'] = self.service.start_launch(name=launch_name,
                                                       start_time=timestamp(),
-                                                      description="My test launch")
+                                                      description=sessionid)
+                        # TODO: configurize description ^^^
                         #print(f'LAUNCH: {self.launch}')
-                        self.domain_paths[sessionid] = self.launch
+                        self.domain_paths[sessionid] = self.kv['launch']
+                        self.session_in_progress = True
+
+                        f = open(f"/datastore/session.current", "w")
+                        f.write(self.kv['launch'])
+                        f.close()
 
                     if kv_type == "sessionend":
+                        print('SESSION END')
+                        if not self.session_in_progress:
+                            #TODO: handle mid-session restarts
+                            continue
+                        self.kv['offset_end'] = message_offset
+
                         launch_name = kv_event.get('name')
                         print(f"Ending launch: {launch_name}")
                         # Finish launch.
-                        self.service.finish_launch(launch=self.launch,
+                        self.service.finish_launch(launch=self.kv['launch'],
                                                    end_time=timestamp())
                         print(self.domain_paths)
 
+                        os.unlink("/datastore/session.current")
+                        self.session_in_progress = False
+
                     if kv_type == "testresult":
+                        # session interrupted? read from cache
+                        if not self.session_in_progress:
+                            cachefile = f'datastore/{sessionid}.cache'
+                            if os.path.exists(cachefile):
+                                with open(cachefile) as fh:
+                                    self.kv = json.load(fh)
+                                print(self.kv)
+                                self.domain_paths = self.kv['domain_paths']
+                                self.session_in_progress = True
+                                print(self.domain_paths)
+                                self.service.launch_id = self.kv['launch']
+                            else:
+                                continue
+
                         kv_name = kv_event.get('nodeid')
                         kv_status = kv_event.get('status')
                         domain = kv_event.get('domain')
@@ -172,10 +219,19 @@ class KafkaventsReportPortalBridge(object):
                                                                parameters={"key1": "val1",
                                                                            "key2": "val2"})
                         print(f'ITEM: {item_id}')
-                        # Finish test item Report Portal versions below 5.0.0.
                         self.service.finish_test_item(item_id=item_id,
                                                       end_time=timestamp(),
                                                       status=kv_status)
+
+                    # we made it this far, write the offset for this event
+                    with open("/datastore/offset", "w") as fileh:
+                        fileh.write(f'{message_offset}')
+
+                    # write the session cache
+                    self.kv['domain_paths'] = self.domain_paths
+                    with open(f'/datastore/{sessionid}.cache', "w") as ch:
+                        json.dump(self.kv, ch, indent=2, sort_keys=True)
+
         except KeyboardInterrupt:
             pass
         finally:

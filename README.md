@@ -2,6 +2,8 @@
 ```
 python3 kafkavents_reportportal.py
 
+podman secret create kafka_secret kafkavents/kafka.json
+
 podman build --rm=true -t kafkavents-reportportal:latest .
 
 podman run -it --secret kafka_secret --env-file=kafkavents/env.bash  \
