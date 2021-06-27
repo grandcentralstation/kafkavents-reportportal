@@ -9,7 +9,9 @@ RUN pip3 install --upgrade pip
 RUN pip install wheel confluent-kafka reportportal-client
 RUN pip install --upgrade --force-reinstall urllib3
 #RUN pip install --upgrade git+git://github.com/loadtheaccumulator/grandcentralstation/kafkavents-reportportal.git
-COPY kafkavents_reportportal.py /usr/local/bin
-#COPY kafka_conf.json .
 
-CMD python3 /usr/local/bin/kafkavents_reportportal.py
+# get rid of this next stuff when we install via pip
+COPY kafkavents_reportportal.py /usr/local/kafkavents-reportportal/
+COPY kafkavents /usr/local/kafkavents-reportportal/kafkavents
+
+CMD python3 /usr/local/kafkavents-reportportal/kafkavents_reportportal.py
