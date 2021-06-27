@@ -41,13 +41,22 @@ class KafkaventsReportPortalBridge(object):
         RP_TOKEN
 
         KAFKA_CONF
-        KV_DATA_DIR
+        KAFKA_OFFSET
+        KV_DATASTORE
         KV_TOPIC
         """
         self.session_in_progress = False
+        self.datastore = os.getenv('KV_DATASTORE', '/datastore')
+        if not os.path.exists:
+            print(f'Creating datastore directory: {self.datastore}')
+            os.makedirs(self.datastore)
+        self.topic = os.getenv('KV_TOPIC', 'kafkavents')
 
+        self.setup_kafka()
+        self.setup_reportportal()
+
+    def setup_kafka(self):
         # Setup Kafka
-        #use OpenShift secrets to put this in place then point to it here
         kafka_file = os.getenv('KAFKA_CONF',
                                '/usr/local/etc/kafkavents/kafka.json')
         fileh = open(kafka_file)
@@ -55,22 +64,19 @@ class KafkaventsReportPortalBridge(object):
         fileh.close()
 
         # SETUP KV
-        self.datastore = os.getenv('KV_DATADIR', '/datastore')
-        self.topic = os.getenv('KV_TOPIC', 'kafkavents')
-        # TODO: listen to multiple topics
-        # TODO: more importantly, track multiple sessions
-
         kafkaconf['client.id'] = 'kafkavents-reportportal'
+        self.kv_host = kafkaconf['bootstrap.servers']
         self.kafkacons = Consumer(kafkaconf)
         self.kafkacons.subscribe([self.topic])
         _, self.end_offset = self.kafkacons.get_watermark_offsets(TopicPartition('kafkavents', 0))
-        print(f'READ OFFSET: {self.end_offset}')
+        #print(f'READ OFFSET: {self.end_offset}')
         if os.getenv('KAFKA_OFFSET', None) is not None:
             self.end_offset = int(os.getenv('KAFKA_OFFSET'))
         self.kafkacons.assign([TopicPartition('kafkavents', partition=0, offset=self.end_offset)])
         self.kafkacons.commit()
+        print(f'Conversing with Kafka {self.kv_host} on topic {self.topic}')
 
-
+    def setup_reportportal(self):
         # setup reportportal
         self.rp_host = os.getenv('RP_HOST', None)
         self.rp_project = os.getenv('RP_PROJECT', None)
@@ -85,9 +91,14 @@ class KafkaventsReportPortalBridge(object):
         self.kv = {}
         self.kv['domain_paths'] = {}
         self.kv['launch'] = None
+        print(f'Conversing with ReportPortal {self.rp_host} '
+              f'on project {self.rp_project}')
 
     @staticmethod
     def get_packet_header(packet):
+        # TODO: add ability to get the actual kafka header too
+        # TODO: stabilize packet DSL
+        # TODO: add validation for packet schema
         return packet.get('header', None)
 
     @staticmethod
@@ -98,17 +109,19 @@ class KafkaventsReportPortalBridge(object):
         domainlist = domain_path.split('.')
 
         if len(domainlist) == 1:
-            print('using launch id')
+            #print('using launch id')
             parent_id = self.kv['launch']
         else:
-            print('looking up id')
+            #print('looking up id')
             parentlist = domainlist[:-1]
             parent_domainpath = '.'.join(parentlist)
             parent_id = self.domain_paths[parent_domainpath]
-        print(f'Domain {domain_path}, Parent {parent_id}')
+        #print(f'Domain {domain_path}, Parent {parent_id}')
         return parent_id
 
     def create_missing_domainpaths(self, domain):
+        """Create a list of domain paths from a test nodeid"""
+        # TODO: would test namespace be better here than domain path?
         domaintets = domain.split('.')
         counter = 0
         while counter < len(domaintets) - 1:
@@ -169,12 +182,13 @@ class KafkaventsReportPortalBridge(object):
 
                         launch_name = kv_event.get('name')
                         print(f"Starting launch: {launch_name}")
-                        # Start launch.
+                        # Start launch
                         self.kv['launch'] = self.service.start_launch(name=launch_name,
                                                       start_time=timestamp(),
-                                                      description=sessionid)
+                                                      description='Created by the bridge',
+                                                      attributes=[{'key': 'sessiondid', 'value': sessionid}])
                         # TODO: configurize description ^^^
-                        #print(f'LAUNCH: {self.launch}')
+                        print('LAUNCH: {}', self.kv['launch'])
                         self.domain_paths[sessionid] = self.kv['launch']
                         self.session_in_progress = True
 
@@ -254,3 +268,7 @@ class KafkaventsReportPortalBridge(object):
 
 kafka = KafkaventsReportPortalBridge()
 kafka.listen()
+
+# TODO LINT!!!!
+# TODO: listen to multiple topics
+# TODO: more importantly, track multiple sessions
