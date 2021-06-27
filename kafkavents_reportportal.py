@@ -13,6 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this software. If not, see <http://www.gnu.org/licenses/>.
 #
+"""This module serves as a real-time bridge between Kafka and ReportPortal"""
 import json
 import os
 from time import time
@@ -30,7 +31,19 @@ def timestamp():
 
 
 class KafkaventsReportPortalBridge(object):
+    """The bridge between Kafka and ReportPortal"""
     def __init__(self):
+        """Initializes the bridge.
+
+        Required Env Vars:
+        RP_HOST
+        RP_PROJECT
+        RP_TOKEN
+
+        KAFKA_CONF
+        KV_DATA_DIR
+        KV_TOPIC
+        """
         self.session_in_progress = False
 
         # Setup Kafka
@@ -42,20 +55,20 @@ class KafkaventsReportPortalBridge(object):
         fileh.close()
 
         # SETUP KV
+        self.datastore = os.getenv('KV_DATADIR', '/datastore')
         self.topic = os.getenv('KV_TOPIC', 'kafkavents')
+        # TODO: listen to multiple topics
+        # TODO: more importantly, track multiple sessions
 
         kafkaconf['client.id'] = 'kafkavents-reportportal'
-        #kafkaconf['enable.auto.commit'] = "true"
         self.kafkacons = Consumer(kafkaconf)
         self.kafkacons.subscribe([self.topic])
-        #TODO: unwire kafkavents topic
         _, self.end_offset = self.kafkacons.get_watermark_offsets(TopicPartition('kafkavents', 0))
         print(f'READ OFFSET: {self.end_offset}')
         if os.getenv('KAFKA_OFFSET', None) is not None:
             self.end_offset = int(os.getenv('KAFKA_OFFSET'))
         self.kafkacons.assign([TopicPartition('kafkavents', partition=0, offset=self.end_offset)])
         self.kafkacons.commit()
-
 
 
         # setup reportportal
@@ -165,7 +178,7 @@ class KafkaventsReportPortalBridge(object):
                         self.domain_paths[sessionid] = self.kv['launch']
                         self.session_in_progress = True
 
-                        f = open(f"/datastore/session.current", "w")
+                        f = open(f"{self.datastore}/session.current", "w")
                         f.write(self.kv['launch'])
                         f.close()
 
@@ -183,7 +196,7 @@ class KafkaventsReportPortalBridge(object):
                                                    end_time=timestamp())
                         print(self.domain_paths)
 
-                        os.unlink("/datastore/session.current")
+                        os.unlink(f'{self.datastore}/session.current')
                         self.session_in_progress = False
 
                     if kv_type == "testresult":
@@ -224,12 +237,12 @@ class KafkaventsReportPortalBridge(object):
                                                       status=kv_status)
 
                     # we made it this far, write the offset for this event
-                    with open("/datastore/offset", "w") as fileh:
+                    with open(f"{self.datastore}/offset", "w") as fileh:
                         fileh.write(f'{message_offset}')
 
                     # write the session cache
                     self.kv['domain_paths'] = self.domain_paths
-                    with open(f'/datastore/{sessionid}.cache', "w") as ch:
+                    with open(f'{self.datastore}/{sessionid}.cache', "w") as ch:
                         json.dump(self.kv, ch, indent=2, sort_keys=True)
 
         except KeyboardInterrupt:
