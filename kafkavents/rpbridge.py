@@ -1,5 +1,22 @@
+# Copyright 2021 Jonathan Holloway <loadtheaccumulator@gmail.com>
+#
+# This module is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This software is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this software. If not, see <http://www.gnu.org/licenses/>.
+#
 """The module that handles all things Kafkavents to ReportPortal."""
 import json
+import shutil
+import os
 
 
 class RPBridgeData:
@@ -7,6 +24,7 @@ class RPBridgeData:
 
     def __init__(self):
         """Do nothing but wait for data."""
+        self.testnodes = {}
         pass
 
 
@@ -14,17 +32,46 @@ class RPBridge():
     """The Kafkavents bridge class managing ReportPortal sessions."""
 
     def __init__(self, sessionid, datastore='/tmp/kafkavents/datastore',
-                 topic=None, offset_start=None):
+                 topic=None, offset_start=None, restore=False):
         """Initialize the bridge."""
-        self.datastore = datastore
         self.data = RPBridgeData()
-        self.sessionid = sessionid
-        self.offset_start = offset_start
-        self.offset_end = None
-        self.offset_last = None
-        self.topic = None
-        self.launch = None
-        self.testnodes = {}
+        self.datastore = datastore
+        self._datastore_file = None
+        self._datastore_dir = None
+
+        if restore:
+            self.resume(sessionid=sessionid, datastore=datastore,
+                        topic=topic)
+        else:
+
+
+            self.sessionid = sessionid
+            self.topic = topic
+            self.offset_start = offset_start
+            self.offset_end = None
+            self.offset_last = None
+            #self.restore = restore
+            self.launch = None
+            self.testnodes = {'None': None}
+
+    @property
+    def datastore_dir(self):
+        """Directory name for the datastore."""
+        if self._datastore_dir is None:
+            self._datastore_dir = f'{self.datastore}/{self.sessionid}'
+        return self._datastore_dir
+
+    @property
+    def datastore_file(self):
+        """Filename for the datastore."""
+        # FIXME: deprecate this when datastore_dir is working
+        if self._datastore_file is None:
+            self._datastore_file = f'{self.datastore}/{self.sessionid}.datastore'
+        return self._datastore_file
+
+    @datastore_file.setter
+    def datastore_file(self, datastore_file):
+        self._datastore_file = datastore_file
 
     @property
     def sessionid(self):
@@ -34,7 +81,7 @@ class RPBridge():
     @sessionid.setter
     def sessionid(self, sessionid):
         self.data.sessionid = sessionid
-        self.write()
+        self.write(file='sessionid', data=sessionid)
 
     @property
     def launch(self):
@@ -44,7 +91,7 @@ class RPBridge():
     @launch.setter
     def launch(self, launch):
         self.data.launch = launch
-        self.write()
+        self.write(file='launch', data=launch)
 
     @property
     def offset_end(self):
@@ -54,7 +101,7 @@ class RPBridge():
     @offset_end.setter
     def offset_end(self, offset):
         self.data.offset_end = offset
-        self.write()
+        self.write(file='offset_end', data=offset)
 
     @property
     def offset_last(self):
@@ -64,7 +111,7 @@ class RPBridge():
     @offset_last.setter
     def offset_last(self, offset):
         self.data.offset_last = offset
-        self.write()
+        self.write(file='offset_last', data=offset)
 
     @property
     def offset_start(self):
@@ -74,7 +121,7 @@ class RPBridge():
     @offset_start.setter
     def offset_start(self, offset):
         self.data.offset_start = offset
-        self.write()
+        self.write(file='offset_start', data=offset)
 
     @property
     def testnodes(self):
@@ -83,26 +130,58 @@ class RPBridge():
 
     @testnodes.setter
     def testnodes(self, testnodes):
-        self.data.testnodes = testnodes
-        self.write()
+        print(f'TESTNODES: {testnodes}')
+        for key, value in testnodes.items():
+            if key == 'None':
+                self.data.testnodes = {}
+            else:
+                self.data.testnodes[key] = value
+        self.write(file='testnodes', data=self.data.testnodes)
 
-    def write(self):
+    def create_session_store(self):
+        """Create the session directory for storing data."""
+        self.datastore_dir = f'{self.datastore}/{self.sessionid}'
+        if not os.path.exists(self.datastore_dir):
+            os.makedirs(self.datastore_dir)
+
+    def write(self, file=None, data=None, summary=True):
         """Write the session to disk (or other future)."""
+        # TODO: make summary False when dirs are working
         # TODO: make this a lot more efficient than writing all data
-        with open(f'{self.datastore}/{self.sessionid}.datastore', "w") as ch:
-            json.dump(self.data.__dict__, ch, indent=2, sort_keys=True)
+        if not os.path.exists(self.datastore_dir):
+            os.makedirs(self.datastore_dir)
+        if file is not None and data is not None:
+            data_filename = f'{self.datastore_dir}/{file}'
+            with open(data_filename, "w") as chf:
+                json.dump(data, chf, indent=2, sort_keys=True)
+
+        if summary:
+            with open(f'{self.datastore_file}', "w") as ch:
+                json.dump(self.data.__dict__, ch, indent=2, sort_keys=True)
 
     def start(self):
         """Start the session."""
+        #session_file = f'{self.session_file}'
+        with open(f'{self.datastore_file}', "w") as ch:
+            json.dump(self.data.__dict__, ch, indent=2, sort_keys=True)
 
     def end(self):
         """End the session."""
-        self.write()
+        self.write(summary=True)
+        shutil.rmtree(self.datastore_dir)
 
-    def resume(self):
+    def resume(self, sessionid=None, datastore=None, topic=None):
         """Resume a session that was interrupted before completion."""
-        pass
+        # FIXME: not working yet
+        print("DATA DICT BEFORE: ", self.data.__dict__)
+        datastore_file = f'datastore/{sessionid}.datastore'
+        if os.path.exists(datastore_file):
+            with open(datastore_file) as fh:
+                self.data.__dict__ = json.load(fh)
+        print("DATA DICT AFTER: ", self.data.__dict__)
+        print("DATA TEST: ", self.data.offset_last)
 
     def replay(self):
         """Replay a session from start to end."""
+        # TODO: replay reads from a session file
         pass

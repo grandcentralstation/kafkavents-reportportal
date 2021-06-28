@@ -45,15 +45,17 @@ class KafkaventsReportPortal(object):
         RP_TOKEN
 
         KAFKA_CONF
-        KAFKA_OFFSET
+        KV_OFFSET
+        KV_RESUME
         KV_DATASTORE
         KV_TOPIC
         """
         self.session_in_progress = False
         self.datastore = os.getenv('KV_DATASTORE', '/datastore')
-        if not os.path.exists:
+        if not os.path.exists(self.datastore):
             print(f'Creating datastore directory: {self.datastore}')
             os.makedirs(self.datastore)
+
         self.topic = os.getenv('KV_TOPIC', 'kafkavents')
 
         self.setup_kafka()
@@ -73,6 +75,7 @@ class KafkaventsReportPortal(object):
         self.kv_host = kafkaconf['bootstrap.servers']
         self.kafkacons = Consumer(kafkaconf)
         self.kafkacons.subscribe([self.topic])
+        '''
         _, self.listen_offset = self.kafkacons.get_watermark_offsets(TopicPartition('kafkavents', 0))
         #print(f'READ OFFSET: {self.listen_offset}')
         if os.getenv('KAFKA_OFFSET', None) is not None:
@@ -80,6 +83,7 @@ class KafkaventsReportPortal(object):
         self.kafkacons.assign([TopicPartition('kafkavents', partition=0, offset=self.listen_offset)])
         self.kafkacons.commit()
         print(f'Conversing with Kafka {self.kv_host} on topic {self.topic}')
+        '''
 
     def setup_reportportal(self):
         """Configure the ReportPortal connection."""
@@ -96,7 +100,6 @@ class KafkaventsReportPortal(object):
         self.node_paths = {}
         self.kv = {}
         self.kv['node_paths'] = {}
-        #self.kv['launch'] = None
         print(f'Conversing with ReportPortal {self.rp_host} '
               f'on project {self.rp_project}')
 
@@ -154,11 +157,36 @@ class KafkaventsReportPortal(object):
                                                      start_time=timestamp(),
                                                      item_type="SUITE")
                 self.node_paths[node_path] = suite_id
-                self.bridge.testnodes[node_path] = suite_id
-                #print(f'CREATED NODE {node_path} with ID {suite_id} and parent {parent_id}')
+
+                # a bit of a misnomer hack here.
+                # uses a setter to set an entry in the dictionary
+                # not the entire dictionary
+                self.bridge.testnodes = {node_path: suite_id}
             counter = counter + 1
 
     def listen(self):
+        """Listen for Kafka messages."""
+        # Listen from the end (or thereabouts)
+        topicpart = TopicPartition('kafkavents', 0)
+        _, self.listen_offset = self.kafkacons.get_watermark_offsets(topicpart)
+        print(f'READ OFFSET: {self.listen_offset}')
+        if os.getenv('KAFKA_OFFSET', None) is not None:
+            self.listen_offset = int(os.getenv('KAFKA_OFFSET'))
+
+        resume_sessionid = os.getenv('KV_RESUME', False)
+        if resume_sessionid:
+            print ('RESUMING SESSION')
+            self.bridge = RPBridge(resume_sessionid, datastore=self.datastore,
+                                   topic=self.topic, restore=True)
+            self.listen_offset = self.bridge.offset_last
+            self.session_in_progress = True
+            self.service.launch_id = self.bridge.launch
+
+        self.kafkacons.assign([TopicPartition('kafkavents', partition=0,
+                                              offset=self.listen_offset)])
+        self.kafkacons.commit()
+        print(f'Conversing with Kafka {self.kv_host} on topic {self.topic}')
+
         print(f'Listening at offset {self.listen_offset} ...')
         try:
             while True:
@@ -175,7 +203,7 @@ class KafkaventsReportPortal(object):
                     print(f'\nTOPIC: {topic} PARTITION: {partition} '
                           f'OFFSET: {message_offset}')
                     self.kv['offset'] = message_offset
-                    # Something happened. Check event.
+                    # Something occurred. Check event.
                     event_data = json.loads(kevent.value())
                     kv_header = self.get_packet_header(event_data)
                     sessionid = kv_header.get('session_id', None)
@@ -205,12 +233,8 @@ class KafkaventsReportPortal(object):
                         self.kv['launch'] = self.bridge.launch
                         # TODO: configurize description ^^^
                         print('LAUNCH: {}', self.bridge.launch)
-                        #self.node_paths[sessionid] = self.bridge.launch
                         self.session_in_progress = True
-
-                        f = open(f"{self.datastore}/session.current", "w")
-                        f.write(self.bridge.launch)
-                        f.close()
+                        self.bridge.offset_last = message_offset
 
                     if kv_type == "sessionend":
                         print('SESSION END')
@@ -227,25 +251,36 @@ class KafkaventsReportPortal(object):
                                                    end_time=timestamp())
                         print(self.node_paths)
 
-                        os.unlink(f'{self.datastore}/session.current')
-                        self.session_in_progress = False
+                        #os.unlink(f'{self.datastore}/session.current')
+                        if self.session_in_progress:
+                            self.bridge.offset_last = message_offset
+                            self.session_in_progress = False
+                            self.bridge.end()
 
                     if kv_type == "testresult":
                         # session interrupted? read from cache
                         if not self.session_in_progress:
                             # TODO: refactor this to the bridge.resume()
-                            cachefile = f'datastore/{sessionid}.cache'
+                            print('WARNING: NO SESSION IN PROGRESS. '
+                                  'Skipping to the next SESSION END')
+                            '''
+                            cachefile = f'datastore/{sessionid}.datastore'
                             if os.path.exists(cachefile):
                                 with open(cachefile) as fh:
                                     self.kv = json.load(fh)
                                 print(self.kv)
-                                self.node_paths = self.kv['node_paths']
+                                self.node_paths = self.kv['testnodes']
                                 self.session_in_progress = True
                                 print(self.node_paths)
-                                self.service.launch_id = self.bridge.launch
+                                self.service.launch_id = self.kv['launch']
+                                self.bridge = RPBridge(sessionid,
+                                                       topic=self.topic,
+                                                       datastore=self.datastore)
+
                             else:
                                 continue
-
+                            '''
+                            continue
                         kv_name = kv_event.get('nodeid')
                         kv_status = kv_event.get('status')
                         # TODO: change domain in pytest-kafkavents to nodespace
@@ -270,18 +305,24 @@ class KafkaventsReportPortal(object):
                                                       end_time=timestamp(),
                                                       status=kv_status)
 
+                        if self.session_in_progress:
+                            self.bridge.offset_last = message_offset
+
+                    if kv_type == "summary":
+                        print("SUMMARY")
+                        #self.bridge.offset_last = message_offset
+
                     # we made it this far, write the offset for this event
-                    with open(f"{self.datastore}/offset", "w") as fileh:
-                        fileh.write(f'{message_offset}')
-                    if self.session_in_progress:
-                        self.bridge.offset_last = message_offset
+                    #if self.session_in_progress:
+                    #    self.bridge.offset_last = message_offset
 
                     # write the session cache
                     self.kv['node_paths'] = self.node_paths
                     #self.bridge.testnodes = self.node_paths
+                    '''
                     with open(f'{self.datastore}/{sessionid}.cache', "w") as ch:
                         json.dump(self.kv, ch, indent=2, sort_keys=True)
-
+                    '''
         except KeyboardInterrupt:
             pass
         finally:
@@ -289,10 +330,9 @@ class KafkaventsReportPortal(object):
             self.kafkacons.close()
 
 
-# FIXME: add main test here
-
-kafka = KafkaventsReportPortal()
-kafka.listen()
+if __name__ == '__main__':
+    kafka = KafkaventsReportPortal()
+    kafka.listen()
 
 # TODO: LINT!!!!
 # TODO: listen to multiple topics
