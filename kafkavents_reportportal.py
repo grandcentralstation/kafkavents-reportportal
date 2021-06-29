@@ -33,28 +33,17 @@ def timestamp():
     return str(int(time() * 1000))
 
 
-class KafkaventsReportPortal(object):
+class KafkaventsReportPortal():
     """The bridge between Kafka and ReportPortal."""
 
-    def __init__(self):
-        """Initialize the bridge.
-
-        Required Env Vars:
-        RP_HOST
-        RP_PROJECT
-        RP_TOKEN
-
-        KAFKA_CONF
-        KV_OFFSET
-        KV_RESUME
-        KV_DATASTORE
-        KV_TOPIC
-        """
+    def __init__(self, kafka_conf=None, rp_conf=None):
+        """Initialize the bridge."""
         self.session_in_progress = False
-        self.datastore = os.getenv('KV_DATASTORE', '/datastore')
+        self.datastore = os.getenv('KV_DATASTORE', '/tmp/datastore')
         if not os.path.exists(self.datastore):
             print(f'Creating datastore directory: {self.datastore}')
             os.makedirs(self.datastore)
+        print(f'USING {self.datastore} for datastore')
 
         self.topic = os.getenv('KV_TOPIC', 'kafkavents')
 
@@ -75,15 +64,6 @@ class KafkaventsReportPortal(object):
         self.kv_host = kafkaconf['bootstrap.servers']
         self.kafkacons = Consumer(kafkaconf)
         self.kafkacons.subscribe([self.topic])
-        '''
-        _, self.listen_offset = self.kafkacons.get_watermark_offsets(TopicPartition('kafkavents', 0))
-        #print(f'READ OFFSET: {self.listen_offset}')
-        if os.getenv('KAFKA_OFFSET', None) is not None:
-            self.listen_offset = int(os.getenv('KAFKA_OFFSET'))
-        self.kafkacons.assign([TopicPartition('kafkavents', partition=0, offset=self.listen_offset)])
-        self.kafkacons.commit()
-        print(f'Conversing with Kafka {self.kv_host} on topic {self.topic}')
-        '''
 
     def setup_reportportal(self):
         """Configure the ReportPortal connection."""
@@ -226,10 +206,14 @@ class KafkaventsReportPortal(object):
                         launch_name = kv_event.get('name')
                         print(f"Starting launch: {launch_name}")
                         # Start launch
-                        self.bridge.launch = self.service.start_launch(name=launch_name,
-                                                                      start_time=timestamp(),
-                                                                      description='Created by the bridge',
-                                                                      attributes=[{'key': 'sessiondid', 'value': sessionid}])
+                        attributes = [{'key': 'sessiondid',
+                                       'value': sessionid}]
+                        description = 'Created by the bridge'
+                        self.bridge.launch = \
+                            self.service.start_launch(name=launch_name,
+                                                      start_time=timestamp(),
+                                                      description=description,
+                                                      attributes=attributes)
                         self.kv['launch'] = self.bridge.launch
                         # TODO: configurize description ^^^
                         print('LAUNCH: {}', self.bridge.launch)
@@ -290,16 +274,18 @@ class KafkaventsReportPortal(object):
                         print(f'NAME: {name}')
                         self.create_missing_testnodes(nodespace)
 
-                        print(f'Creating a test item entry')
+                        print('Creating a test item entry')
                         parent_id = self.get_parent_id(nodespace)
                         # FIXME: replace sample attr key:values
-                        item_id = self.service.start_test_item(parent_item_id=parent_id,
-                                                               name=name,
-                                                               description=kv_name,
-                                                               start_time=timestamp(),
-                                                               item_type="TEST",
-                                                               attributes={"key1": "val1",
-                                                                           "key2": "val2"})
+                        item_id = \
+                            self.service.start_test_item(
+                                parent_item_id=parent_id,
+                                name=name,
+                                description=kv_name,
+                                start_time=timestamp(),
+                                item_type="TEST",
+                                attributes={"key1": "val1",
+                                            "key2": "val2"})
                         print(f'RP ITEM ID: {item_id}')
                         self.service.finish_test_item(item_id=item_id,
                                                       end_time=timestamp(),
@@ -330,9 +316,26 @@ class KafkaventsReportPortal(object):
             self.kafkacons.close()
 
 
-if __name__ == '__main__':
+def main():
+    """Start this thing up with main.
+
+    Required Env Vars:
+        RP_HOST
+        RP_PROJECT
+        RP_TOKEN
+
+        KAFKA_CONF
+        KV_OFFSET
+        KV_RESUME
+        KV_DATASTORE
+        KV_TOPIC
+    """
     kafka = KafkaventsReportPortal()
     kafka.listen()
+
+
+if __name__ == '__main__':
+    main()
 
 # TODO: LINT!!!!
 # TODO: listen to multiple topics

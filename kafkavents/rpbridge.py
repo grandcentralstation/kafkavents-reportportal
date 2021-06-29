@@ -43,14 +43,11 @@ class RPBridge():
             self.resume(sessionid=sessionid, datastore=datastore,
                         topic=topic)
         else:
-
-
             self.sessionid = sessionid
             self.topic = topic
             self.offset_start = offset_start
             self.offset_end = None
             self.offset_last = None
-            #self.restore = restore
             self.launch = None
             self.testnodes = {'None': None}
 
@@ -66,7 +63,8 @@ class RPBridge():
         """Filename for the datastore."""
         # FIXME: deprecate this when datastore_dir is working
         if self._datastore_file is None:
-            self._datastore_file = f'{self.datastore}/{self.sessionid}.datastore'
+            self._datastore_file = \
+                f'{self.datastore}/{self.sessionid}.datastore'
         return self._datastore_file
 
     @datastore_file.setter
@@ -185,3 +183,6 @@ class RPBridge():
         """Replay a session from start to end."""
         # TODO: replay reads from a session file
         pass
+
+
+# TODO: clean up the property getter/setters
