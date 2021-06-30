@@ -17,4 +17,6 @@ RUN pip install -i https://test.pypi.org/simple/ kafkavents-reportportal
 #COPY kafkavents_reportportal.py /usr/local/kafkavents-reportportal/
 #COPY kafkavents /usr/local/kafkavents-reportportal/kafkavents
 
+COPY examples /usr/local/kafkavents/
+
 CMD kafkavents-reportportal
