@@ -22,7 +22,7 @@ from confluent_kafka import Consumer, TopicPartition
 from reportportal_client import ReportPortalService
 import urllib3
 
-from kafkavents.rpbridge import RPBridge
+from kafkavents_reportportal.rpbridge import RPBridge
 
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
