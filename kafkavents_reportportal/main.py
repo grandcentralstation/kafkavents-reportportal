@@ -16,6 +16,7 @@
 """This module serves as a real-time bridge between Kafka and ReportPortal."""
 import json
 import os
+import sys
 from time import time
 
 from confluent_kafka import Consumer, TopicPartition
@@ -39,7 +40,7 @@ class KafkaventsReportPortal():
     def __init__(self, kafka_conf=None, rp_conf=None):
         """Initialize the bridge."""
         self.session_in_progress = False
-        self.datastore = os.getenv('KV_DATASTORE', '/tmp/datastore')
+        self.datastore = os.getenv('KV_DATASTORE', '/datastore')
         if not os.path.exists(self.datastore):
             print(f'Creating datastore directory: {self.datastore}')
             os.makedirs(self.datastore)
@@ -50,45 +51,77 @@ class KafkaventsReportPortal():
         self.setup_kafka()
         self.setup_reportportal()
 
-    def setup_kafka(self):
-        """Configure the Kafka connection."""
-        # Setup Kafka
-        kafka_file = os.getenv('KAFKA_CONF',
-                               '/usr/local/etc/kafkavents/kafka.json')
-        fileh = open(kafka_file)
-        kafkaconf = json.load(fileh)
-        fileh.close()
-
-        # SETUP KV
-        kafkaconf['client.id'] = 'kafkavents-reportportal'
-        self.kv_host = kafkaconf['bootstrap.servers']
-        self.kafkacons = Consumer(kafkaconf)
-        self.kafkacons.subscribe([self.topic])
-
-    def setup_reportportal(self):
-        """Configure the ReportPortal connection."""
-        # Setup reportportal
-        # Try config file first
-        rp_file = os.getenv('RP_CONF',
-                            '/usr/local/etc/kafkavents/kafka.json')
-        fileh = open(rp_file)
-        rpconf = json.load(fileh)
-        fileh.close()
-
-        self.rp_host = os.getenv('RP_HOST', rpconf.get('RP_HOST'))
-        self.rp_project = os.getenv('RP_PROJECT', rpconf.get('RP_PROJECT'))
-        self.rp_token = os.getenv('RP_TOKEN', rpconf.get('RP_TOKEN'))
-
-        self.service = ReportPortalService(endpoint=self.rp_host,
-                                           project=self.rp_project,
-                                           token=self.rp_token)
-        self.service.session.verify = False
         self.launch = None
         self.node_paths = {}
         self.kv = {}
         self.kv['node_paths'] = {}
-        print(f'Conversing with ReportPortal {self.rp_host} '
-              f'on project {self.rp_project}')
+        # TODO: figure out which of the above can go
+
+    def setup_kafka(self):
+        """Configure the Kafka connection."""
+        # Setup Kafka
+        kafka_file = None
+        for file_path in ['/run/secrets/kafka_secret',
+                          '/usr/local/etc/kafkavents/kafka.json']:
+            print(f'CHECKING {file_path}')
+            if os.path.exists(file_path):
+                kafka_file = file_path
+                break
+        kafka_file = os.getenv('KAFKA_CONF', kafka_file)
+
+        if kafka_file is not None:
+            print(f'READING {kafka_file}')
+            fileh = open(kafka_file)
+            kafkaconf = json.load(fileh)
+            fileh.close()
+
+            # SETUP KV
+            kafkaconf['client.id'] = 'kafkavents-reportportal'
+            self.kv_host = kafkaconf['bootstrap.servers']
+            self.kafkacons = Consumer(kafkaconf)
+            self.kafkacons.subscribe([self.topic])
+        else:
+            print('ERROR: No Kafka config provided')
+            # TODO: refactor with most graceful exit method
+            sys.exit(1)
+
+    def setup_reportportal(self):
+        """Configure the ReportPortal connection."""
+        # Setup reportportal
+
+        rpconf = {}
+        rp_file = None
+        for file_path in ['/run/secrets/reportportal_secret',
+                          '/usr/local/etc/kafkavents/rp_conf.json']:
+            print(f'CHECKING {file_path}')
+            if os.path.exists(file_path):
+                rp_file = file_path
+                break
+        rp_file = os.getenv('RP_CONF', rp_file)
+
+        if rp_file is not None:
+            print(f'READING {rp_file}')
+            fileh = open(rp_file)
+            rpconf = json.load(fileh)
+            fileh.close()
+
+        # Override config with ENV var
+        self.rp_host = os.getenv('RP_HOST', rpconf.get('RP_HOST'))
+        self.rp_project = os.getenv('RP_PROJECT', rpconf.get('RP_PROJECT'))
+        self.rp_token = os.getenv('RP_TOKEN', rpconf.get('RP_TOKEN'))
+
+        if self.rp_host is not None:
+            self.service = ReportPortalService(endpoint=self.rp_host,
+                                               project=self.rp_project,
+                                               token=self.rp_token)
+            self.service.session.verify = False
+
+            print(f'Conversing with ReportPortal {self.rp_host} '
+                  f'on project {self.rp_project}')
+        else:
+            print('ERROR: No ReportPortal config provided')
+            # TODO: refactor with most graceful exit method
+            sys.exit(1)
 
     @staticmethod
     def get_packet_header(packet):
