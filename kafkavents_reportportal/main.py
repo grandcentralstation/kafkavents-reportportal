@@ -67,10 +67,17 @@ class KafkaventsReportPortal():
 
     def setup_reportportal(self):
         """Configure the ReportPortal connection."""
-        # setup reportportal
-        self.rp_host = os.getenv('RP_HOST', None)
-        self.rp_project = os.getenv('RP_PROJECT', None)
-        self.rp_token = os.getenv('RP_TOKEN', None)
+        # Setup reportportal
+        # Try config file first
+        rp_file = os.getenv('RP_CONF',
+                            '/usr/local/etc/kafkavents/kafka.json')
+        fileh = open(rp_file)
+        rpconf = json.load(fileh)
+        fileh.close()
+
+        self.rp_host = os.getenv('RP_HOST', rpconf.get('RP_HOST'))
+        self.rp_project = os.getenv('RP_PROJECT', rpconf.get('RP_PROJECT'))
+        self.rp_token = os.getenv('RP_TOKEN', rpconf.get('RP_TOKEN'))
 
         self.service = ReportPortalService(endpoint=self.rp_host,
                                            project=self.rp_project,
