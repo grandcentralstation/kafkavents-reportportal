@@ -159,14 +159,35 @@ class RPBridge():
 
     def start(self):
         """Start the session."""
+        print("RPBRIDGE: STARTING THE SESSION")
         #session_file = f'{self.session_file}'
-        with open(f'{self.datastore_file}', "w") as ch:
-            json.dump(self.data.__dict__, ch, indent=2, sort_keys=True)
+        #with open(f'{self.datastore_file}', "w") as ch:
+        #    json.dump(self.data.__dict__, ch, indent=2, sort_keys=True)
+        with open(f'{self.datastore}/session.inprogress', 'w') as sfh:
+            json.dump(self.sessionid, sfh)
 
     def end(self):
         """End the session."""
+        print("RPBRIDGE: ENDING THE SESSION")
         self.write(summary=True)
         shutil.rmtree(self.datastore_dir)
+        session_file = f'{self.datastore}/session.inprogress'
+        if os.path.exists(session_file):
+            os.unlink(session_file)
+
+    @staticmethod
+    def recover_session(datastore):
+        """Recover an incomplete session id."""
+        recover_sessionid = None
+
+        print(f'Searching for incomplete session in {datastore}...')
+        session_file = f'{datastore}/session.inprogress'
+        if os.path.exists(session_file):
+            with open(session_file) as fh:
+                recover_sessionid = json.load(fh)
+
+        print(f'Recovering sessionid {recover_sessionid}')
+        return recover_sessionid
 
     def resume(self, sessionid=None, datastore=None, topic=None):
         """Resume a session that was interrupted before completion."""

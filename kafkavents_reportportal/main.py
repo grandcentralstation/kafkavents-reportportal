@@ -47,6 +47,9 @@ class KafkaventsReportPortal():
         print(f'USING {self.datastore} for datastore')
 
         self.topic = os.getenv('KV_TOPIC', 'kafkavents')
+        
+        if os.getenv('KV_AUTORECOVER', False):
+            self.autorecover = True
 
         self.setup_kafka()
         self.setup_reportportal()
@@ -62,7 +65,7 @@ class KafkaventsReportPortal():
         # Setup Kafka
         kafka_file = None
         for file_path in ['/run/secrets/kafka_secret',
-                          '/usr/local/etc/kafkavents/kafka.json']:
+                          '/usr/local/kafkavents/kafka.json']:
             print(f'CHECKING {file_path}')
             if os.path.exists(file_path):
                 kafka_file = file_path
@@ -92,7 +95,7 @@ class KafkaventsReportPortal():
         rpconf = {}
         rp_file = None
         for file_path in ['/run/secrets/reportportal_secret',
-                          '/usr/local/etc/kafkavents/rp_conf.json']:
+                          '/usr/local/kafkavents/reportportal.json']:
             print(f'CHECKING {file_path}')
             if os.path.exists(file_path):
                 rp_file = file_path
@@ -184,6 +187,27 @@ class KafkaventsReportPortal():
                 self.bridge.testnodes = {node_path: suite_id}
             counter = counter + 1
 
+    def recover_session(self):
+        """Auto-recover or resume a specific session."""
+        resume_sessionid = False
+        autorecover = os.getenv('KV_AUTORECOVER', False)
+        if autorecover:
+            print('AUTORECOVER mode is on')
+            # check for incomplete session
+            resume_sessionid = \
+                RPBridge.recover_session(self.datastore)
+
+        resume_sessionid = os.getenv('KV_RESUME_SESSION', resume_sessionid)
+        if resume_sessionid:
+            print('RESUMING SESSION')
+            self.bridge = RPBridge(resume_sessionid, datastore=self.datastore,
+                                   topic=self.topic, restore=True)
+            self.listen_offset = self.bridge.offset_last + 1
+            self.session_in_progress = True
+            self.service.launch_id = self.bridge.launch
+
+        return resume_sessionid
+
     def listen(self):
         """Listen for Kafka messages."""
         # Listen from the end (or thereabouts)
@@ -193,14 +217,7 @@ class KafkaventsReportPortal():
         if os.getenv('KAFKA_OFFSET', None) is not None:
             self.listen_offset = int(os.getenv('KAFKA_OFFSET'))
 
-        resume_sessionid = os.getenv('KV_RESUME', False)
-        if resume_sessionid:
-            print ('RESUMING SESSION')
-            self.bridge = RPBridge(resume_sessionid, datastore=self.datastore,
-                                   topic=self.topic, restore=True)
-            self.listen_offset = self.bridge.offset_last
-            self.session_in_progress = True
-            self.service.launch_id = self.bridge.launch
+        self.recover_session()
 
         self.kafkacons.assign([TopicPartition('kafkavents', partition=0,
                                               offset=self.listen_offset)])
@@ -246,7 +263,7 @@ class KafkaventsReportPortal():
                         launch_name = kv_event.get('name')
                         print(f"Starting launch: {launch_name}")
                         # Start launch
-                        attributes = [{'key': 'sessiondid',
+                        attributes = [{'key': 'sessionid',
                                        'value': sessionid}]
                         description = 'Created by the bridge'
                         self.bridge.launch = \
@@ -258,12 +275,13 @@ class KafkaventsReportPortal():
                         # TODO: configurize description ^^^
                         print('LAUNCH: {}', self.bridge.launch)
                         self.session_in_progress = True
+                        self.bridge.start()
                         self.bridge.offset_last = message_offset
 
                     if kv_type == "sessionend":
                         print('SESSION END')
                         if not self.session_in_progress:
-                            #TODO: handle mid-session restarts
+                            # TODO: handle mid-session restarts
                             continue
                         self.kv['offset_end'] = message_offset
                         self.bridge.offset_end = message_offset
@@ -275,9 +293,11 @@ class KafkaventsReportPortal():
                                                    end_time=timestamp())
                         print(self.node_paths)
 
-                        #os.unlink(f'{self.datastore}/session.current')
                         if self.session_in_progress:
                             self.bridge.offset_last = message_offset
+                            # close the suites
+                            print('CLOSING THE SUITES')
+                            print(self.node_paths)
                             self.session_in_progress = False
                             self.bridge.end()
 
@@ -287,23 +307,6 @@ class KafkaventsReportPortal():
                             # TODO: refactor this to the bridge.resume()
                             print('WARNING: NO SESSION IN PROGRESS. '
                                   'Skipping to the next SESSION END')
-                            '''
-                            cachefile = f'datastore/{sessionid}.datastore'
-                            if os.path.exists(cachefile):
-                                with open(cachefile) as fh:
-                                    self.kv = json.load(fh)
-                                print(self.kv)
-                                self.node_paths = self.kv['testnodes']
-                                self.session_in_progress = True
-                                print(self.node_paths)
-                                self.service.launch_id = self.kv['launch']
-                                self.bridge = RPBridge(sessionid,
-                                                       topic=self.topic,
-                                                       datastore=self.datastore)
-
-                            else:
-                                continue
-                            '''
                             continue
                         kv_name = kv_event.get('nodeid')
                         kv_status = kv_event.get('status')
@@ -316,7 +319,7 @@ class KafkaventsReportPortal():
 
                         print('Creating a test item entry')
                         parent_id = self.get_parent_id(nodespace)
-                        # FIXME: replace sample attr key:values
+                        # FIXME: add user provided attr key:values
                         item_id = \
                             self.service.start_test_item(
                                 parent_item_id=parent_id,
@@ -324,9 +327,11 @@ class KafkaventsReportPortal():
                                 description=kv_name,
                                 start_time=timestamp(),
                                 item_type="TEST",
-                                attributes={"key1": "val1",
-                                            "key2": "val2"})
+                                attributes={"kv_offset": message_offset,
+                                            "kv_session": sessionid})
                         print(f'RP ITEM ID: {item_id}')
+                        # FIXME: "split-brain" happens when interrupted here
+                        #           so a new parent is created???
                         self.service.finish_test_item(item_id=item_id,
                                                       end_time=timestamp(),
                                                       status=kv_status)

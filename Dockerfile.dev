@@ -14,6 +14,6 @@ RUN pip install --upgrade --force-reinstall urllib3
 COPY . app
 RUN cd app && pip install -e .
 
-COPY examples /usr/local/kafkavents/
+COPY examples /usr/local/kafkavents-examples/
 
 CMD kafkavents-reportportal
