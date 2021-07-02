@@ -16,8 +16,9 @@
 """This module serves as a real-time bridge between Kafka and ReportPortal."""
 import json
 import os
+from requests.exceptions import ConnectionError, HTTPError
 import sys
-from time import time
+import time
 
 from confluent_kafka import Consumer, TopicPartition
 from reportportal_client import ReportPortalService
@@ -31,7 +32,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 def timestamp():
     """Timestamp helper func."""
-    return str(int(time() * 1000))
+    return str(int(time.time() * 1000))
 
 
 class KafkaventsReportPortal():
@@ -39,6 +40,7 @@ class KafkaventsReportPortal():
 
     def __init__(self, kafka_conf=None, rp_conf=None):
         """Initialize the bridge."""
+        # FIXME: kafka_conf and rp_conf aren't passed in here
         self.session_in_progress = False
         self.datastore = os.getenv('KV_DATASTORE', '/datastore')
         if not os.path.exists(self.datastore):
@@ -47,7 +49,7 @@ class KafkaventsReportPortal():
         print(f'USING {self.datastore} for datastore')
 
         self.topic = os.getenv('KV_TOPIC', 'kafkavents')
-        
+
         if os.getenv('KV_AUTORECOVER', False):
             self.autorecover = True
 
@@ -56,6 +58,7 @@ class KafkaventsReportPortal():
 
         self.launch = None
         self.node_paths = {}
+        self.suite_stack = []
         self.kv = {}
         self.kv['node_paths'] = {}
         # TODO: figure out which of the above can go
@@ -80,6 +83,11 @@ class KafkaventsReportPortal():
 
             # SETUP KV
             kafkaconf['client.id'] = 'kafkavents-reportportal'
+            self.replay = False
+            if os.getenv('KV_REPLAY', False):
+                self.replay = True
+                self.replay_sessionid = os.getenv('KV_REPLAY')
+                kafkaconf['group.id'] = 'kafkavents-replay'
             self.kv_host = kafkaconf['bootstrap.servers']
             self.kafkacons = Consumer(kafkaconf)
             self.kafkacons.subscribe([self.topic])
@@ -116,7 +124,8 @@ class KafkaventsReportPortal():
         if self.rp_host is not None:
             self.service = ReportPortalService(endpoint=self.rp_host,
                                                project=self.rp_project,
-                                               token=self.rp_token)
+                                               token=self.rp_token,
+                                               is_skipped_an_issue=False)
             self.service.session.verify = False
 
             print(f'Conversing with ReportPortal {self.rp_host} '
@@ -180,6 +189,7 @@ class KafkaventsReportPortal():
                                                      start_time=timestamp(),
                                                      item_type="SUITE")
                 self.node_paths[node_path] = suite_id
+                self.suite_stack.append(suite_id)
 
                 # a bit of a misnomer hack here.
                 # uses a setter to set an entry in the dictionary
@@ -192,6 +202,7 @@ class KafkaventsReportPortal():
         resume_sessionid = False
         autorecover = os.getenv('KV_AUTORECOVER', False)
         if autorecover:
+            # FIXME: we do this check twice. assume we're here for a reason
             print('AUTORECOVER mode is on')
             # check for incomplete session
             resume_sessionid = \
@@ -208,6 +219,12 @@ class KafkaventsReportPortal():
 
         return resume_sessionid
 
+    def get_session_offsets(self, sessionid):
+        """Get the start and end offsets from a session datastore."""
+        session_start = 0
+        session_end = 0
+        return (session_start, session_end)
+
     def listen(self):
         """Listen for Kafka messages."""
         # Listen from the end (or thereabouts)
@@ -217,7 +234,16 @@ class KafkaventsReportPortal():
         if os.getenv('KAFKA_OFFSET', None) is not None:
             self.listen_offset = int(os.getenv('KAFKA_OFFSET'))
 
-        self.recover_session()
+        if self.replay:
+            self.replay_start, self.replay_end = \
+                RPBridge.read_session_offsets(self.replay_sessionid,
+                                              self.datastore)
+            self.listen_offset = self.replay_start
+            print(f'REPLAY: start {self.replay_start} end {self.replay_end}')
+            #self.sessionid = f'{self.sessionid}-replay'
+
+        if self.autorecover:
+            self.recover_session()
 
         self.kafkacons.assign([TopicPartition('kafkavents', partition=0,
                                               offset=self.listen_offset)])
@@ -244,6 +270,8 @@ class KafkaventsReportPortal():
                     event_data = json.loads(kevent.value())
                     kv_header = self.get_packet_header(event_data)
                     sessionid = kv_header.get('session_id', None)
+                    if self.replay:
+                        sessionid += '-replay'
                     packet_num = kv_header.get('packetnum', None)
                     kv_type = kv_header.get('type', None)
                     kv_event = self.get_packet_event(event_data)
@@ -254,6 +282,7 @@ class KafkaventsReportPortal():
                     if kv_type == "sessionstart":
                         print('SESSION START')
                         self.node_paths = {}
+                        self.suite_stack = []
                         #self.bridge.offset_start = message_offset
                         # Start a KV Bridge Session
                         self.bridge = RPBridge(sessionid,
@@ -266,11 +295,24 @@ class KafkaventsReportPortal():
                         attributes = [{'key': 'sessionid',
                                        'value': sessionid}]
                         description = 'Created by the bridge'
-                        self.bridge.launch = \
-                            self.service.start_launch(name=launch_name,
-                                                      start_time=timestamp(),
-                                                      description=description,
-                                                      attributes=attributes)
+                        success = False
+                        while not success:
+                            try:
+                                self.bridge.launch = \
+                                    self.service.start_launch(name=launch_name,
+                                                              start_time=timestamp(),
+                                                              description=description,
+                                                              attributes=attributes)
+                                success = True
+                            except HTTPError as err:
+                                print(f'ERROR: {err} '
+                                      '\nRetrying in 300 seconds')
+                                time.sleep(300)
+                            except ConnectionError as err:
+                                print(f'ERROR: {err}'
+                                      '\nRetrying in 300 seconds')
+                                time.sleep(300)
+
                         self.kv['launch'] = self.bridge.launch
                         # TODO: configurize description ^^^
                         print('LAUNCH: {}', self.bridge.launch)
@@ -293,13 +335,17 @@ class KafkaventsReportPortal():
                                                    end_time=timestamp())
                         print(self.node_paths)
 
-                        if self.session_in_progress:
-                            self.bridge.offset_last = message_offset
-                            # close the suites
-                            print('CLOSING THE SUITES')
-                            print(self.node_paths)
-                            self.session_in_progress = False
-                            self.bridge.end()
+                        self.bridge.offset_last = message_offset
+                        # close the suites
+                        #print('CLOSING THE SUITES')
+                        #print(self.node_paths)
+                        for itemid in reversed(self.suite_stack):
+                            self.service.finish_test_item(item_id=itemid,
+                                                          end_time=timestamp(),
+                                                          status=None)
+                            #print(f'CLOSED: {itemid}')
+                        self.session_in_progress = False
+                        self.bridge.end()
 
                     if kv_type == "testresult":
                         # session interrupted? read from cache
@@ -341,19 +387,22 @@ class KafkaventsReportPortal():
 
                     if kv_type == "summary":
                         print("SUMMARY")
-                        #self.bridge.offset_last = message_offset
+                        # TODO: handle this as part of the session ???
+                        #       it arrives after the sessionend
 
-                    # we made it this far, write the offset for this event
-                    #if self.session_in_progress:
-                    #    self.bridge.offset_last = message_offset
+                    # TODO: handle misc types here
+                    #       better yet, move to event type handler
+                    #       so anything below this can be pass thru
 
-                    # write the session cache
+                    # this is a cheat to workaround refactoring
                     self.kv['node_paths'] = self.node_paths
-                    #self.bridge.testnodes = self.node_paths
-                    '''
-                    with open(f'{self.datastore}/{sessionid}.cache', "w") as ch:
-                        json.dump(self.kv, ch, indent=2, sort_keys=True)
-                    '''
+
+                    if self.replay and message_offset == self.replay_end:
+                        print('REPLAY COMPLETE. EXITING.')
+
+                        sys.exit(0)
+
+
         except KeyboardInterrupt:
             pass
         finally:
@@ -370,6 +419,8 @@ def main():
         RP_TOKEN
 
         KAFKA_CONF
+        KV_REPLAY
+        KV_AUTORECOVER
         KV_OFFSET
         KV_RESUME
         KV_DATASTORE
@@ -382,6 +433,7 @@ def main():
 if __name__ == '__main__':
     main()
 
-# TODO: LINT!!!!
 # TODO: listen to multiple topics
 # TODO: more importantly, track multiple sessions
+# TODO: refactor RP-specifics out of main (see rp_preproc)
+# TODO: add if DEBUG to a lot of print statements

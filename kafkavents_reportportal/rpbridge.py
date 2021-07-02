@@ -157,6 +157,17 @@ class RPBridge():
             with open(f'{self.datastore_file}', "w") as ch:
                 json.dump(self.data.__dict__, ch, indent=2, sort_keys=True)
 
+    @staticmethod
+    def read_session_offsets(sessionid, datastore):
+        """Read the session offsets from the datastore"""
+        # TODO: refactor this!!!
+        with open(f'{datastore}/{sessionid}.datastore') as dsfh:
+            session_data = json.load(dsfh)
+            start_offset = session_data['offset_start']
+            end_offset = session_data['offset_end']
+
+            return start_offset, end_offset
+
     def start(self):
         """Start the session."""
         print("RPBRIDGE: STARTING THE SESSION")
@@ -200,7 +211,7 @@ class RPBridge():
         print("DATA DICT AFTER: ", self.data.__dict__)
         print("DATA TEST: ", self.data.offset_last)
 
-    def replay(self):
+    def replay(self, sessionid, datastore=None):
         """Replay a session from start to end."""
         # TODO: replay reads from a session file
         pass
