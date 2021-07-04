@@ -25,6 +25,8 @@ from reportportal_client import ReportPortalService
 import urllib3
 
 from kafkavents_reportportal.rpbridge import RPBridge
+from kafkavents_reportportal.kafka import Kafka
+from kafkavents_reportportal.reportportal import ReportPortal
 
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -52,6 +54,11 @@ class KafkaventsReportPortal():
 
         if os.getenv('KV_AUTORECOVER', False):
             self.autorecover = True
+
+        self.replay = False
+        if os.getenv('KV_REPLAY', False):
+            self.replay = True
+            self.replay_sessionid = os.getenv('KV_REPLAY')
 
         self.setup_kafka()
         self.setup_reportportal()
@@ -81,16 +88,15 @@ class KafkaventsReportPortal():
             kafkaconf = json.load(fileh)
             fileh.close()
 
-            # SETUP KV
-            kafkaconf['client.id'] = 'kafkavents-reportportal'
-            self.replay = False
-            if os.getenv('KV_REPLAY', False):
-                self.replay = True
-                self.replay_sessionid = os.getenv('KV_REPLAY')
-                kafkaconf['group.id'] = 'kafkavents-replay'
-            self.kv_host = kafkaconf['bootstrap.servers']
-            self.kafkacons = Consumer(kafkaconf)
-            self.kafkacons.subscribe([self.topic])
+            kafka = Kafka(kafkaconf)
+            kafka.topic = self.topic
+            kafka.client_id = 'kafkavents-reportportal'
+
+            if self.replay:
+                kafka.group_id = 'kafkavents-replay'
+
+            self.kv_host = kafka.bootstrap_servers
+            self.kafkacons = kafka.connect()
         else:
             print('ERROR: No Kafka config provided')
             # TODO: refactor with most graceful exit method
@@ -116,20 +122,16 @@ class KafkaventsReportPortal():
             rpconf = json.load(fileh)
             fileh.close()
 
-        # Override config with ENV var
-        self.rp_host = os.getenv('RP_HOST', rpconf.get('RP_HOST'))
-        self.rp_project = os.getenv('RP_PROJECT', rpconf.get('RP_PROJECT'))
-        self.rp_token = os.getenv('RP_TOKEN', rpconf.get('RP_TOKEN'))
+            # Override config with ENV var
+            rpconf['RP_HOST'] = os.getenv('RP_HOST',
+                                          rpconf.get('RP_HOST'))
+            rpconf['RP_PROJECT'] = os.getenv('RP_PROJECT',
+                                             rpconf.get('RP_PROJECT'))
+            rpconf['RP_TOKEN'] = os.getenv('RP_TOKEN',
+                                           rpconf.get('RP_TOKEN'))
 
-        if self.rp_host is not None:
-            self.service = ReportPortalService(endpoint=self.rp_host,
-                                               project=self.rp_project,
-                                               token=self.rp_token,
-                                               is_skipped_an_issue=False)
-            self.service.session.verify = False
-
-            print(f'Conversing with ReportPortal {self.rp_host} '
-                  f'on project {self.rp_project}')
+            self.reportportal = ReportPortal(rpconf)
+            self.service = self.reportportal.service
         else:
             print('ERROR: No ReportPortal config provided')
             # TODO: refactor with most graceful exit method
@@ -159,22 +161,23 @@ class KafkaventsReportPortal():
             #print('looking up id')
             parentlist = nodelist[:-1]
             parent_domainpath = '.'.join(parentlist)
-            parent_id = self.node_paths[parent_domainpath]
+            #parent_id = self.node_paths[parent_domainpath]
+            parent_id = self.bridge.testnodes[parent_domainpath]
         #print(f'Domain {node_path}, Parent {parent_id}')
         return parent_id
 
     def create_missing_testnodes(self, nodeid):
         """Create a list of node paths from a test nodeid."""
-        # TODO: would test namespace be better here than domain path?
         nodetets = nodeid.split('.')
         counter = 0
         while counter < len(nodetets) - 1:
             range_end = counter - len(nodetets) + 1
             #print(f'COUNTER: {counter}:{range_end}')
             node_path = ".".join(nodetets[0:range_end])
-            if node_path not in self.node_paths:
+            #if node_path not in self.node_paths:
+            if node_path not in self.bridge.testnodes:
                 parent_id = self.get_parent_id(node_path)
-                #print(f'CREATING NODE {node_path} with parent {parent_id}')
+                print(f'CREATING NODE {node_path} with parent {parent_id}')
                 if counter == 0:
                     # RP requires parent_uuid when parent is launch
                     suite_id = \
@@ -242,8 +245,11 @@ class KafkaventsReportPortal():
             print(f'REPLAY: start {self.replay_start} end {self.replay_end}')
             #self.sessionid = f'{self.sessionid}-replay'
 
+        recovering_session_flag = False
         if self.autorecover:
-            self.recover_session()
+            recovering_session = self.recover_session()
+            if recovering_session:
+                recovering_session_flag = True
 
         self.kafkacons.assign([TopicPartition('kafkavents', partition=0,
                                               offset=self.listen_offset)])
@@ -354,6 +360,44 @@ class KafkaventsReportPortal():
                             print('WARNING: NO SESSION IN PROGRESS. '
                                   'Skipping to the next SESSION END')
                             continue
+
+                        # check to see if we're about to dupe a testitem
+                        if recovering_session_flag:
+                            # Get the int id for the launch
+                            url = (f'launch?'
+                                   f'filter.eq.uuid={self.bridge.launch}')
+                            data = self.reportportal.api_get(url)
+                            data = json.loads(data.text)
+                            launch_num = data['content'][0]['id']
+
+                            # check for an existing test item for offset
+                            url = (f'item?filter.has.attributeKey=kv_offset&'
+                                   f'filter.has.attributeValue={message_offset}&'
+                                   f'filter.eq.launchId={launch_num}')
+                            data = self.reportportal.api_get(url)
+                            data = json.loads(data.text)
+                            print(f'LAUNCH {launch_num} TESTITEM DATA: {data}')
+                            num_found = data['page']['totalElements']
+                            print(f'NUM_FOUND: {num_found}')
+
+                            # clear the flag and continue if about to dupe
+                            recovering_session_flag = False
+                            if num_found > 0:
+                                print(f'OFFSET {message_offset} HAS ALREADY '
+                                      'BEEN PROCESSED. CLOSING AND MOVING ON.')
+
+                                item_id = data['content'][0]['uuid']
+
+                                kv_status = kv_event.get('status')
+                                issue = None
+                                if kv_status == 'skipped':
+                                    issue = {"issue_type": "NOT_ISSUE"}
+                                self.service.finish_test_item(item_id=item_id,
+                                                              end_time=timestamp(),
+                                                              status=kv_status,
+                                                              issue=issue)
+                                continue
+
                         kv_name = kv_event.get('nodeid')
                         kv_status = kv_event.get('status')
                         # TODO: change domain in pytest-kafkavents to nodespace
@@ -378,9 +422,14 @@ class KafkaventsReportPortal():
                         print(f'RP ITEM ID: {item_id}')
                         # FIXME: "split-brain" happens when interrupted here
                         #           so a new parent is created???
+                        issue = None
+                        print(f'TEST STATUS: {kv_status}')
+                        if kv_status == 'skipped':
+                            issue = {"issue_type": "NOT_ISSUE"}
                         self.service.finish_test_item(item_id=item_id,
                                                       end_time=timestamp(),
-                                                      status=kv_status)
+                                                      status=kv_status,
+                                                      issue=issue)
 
                         if self.session_in_progress:
                             self.bridge.offset_last = message_offset
@@ -389,6 +438,7 @@ class KafkaventsReportPortal():
                         print("SUMMARY")
                         # TODO: handle this as part of the session ???
                         #       it arrives after the sessionend
+                        self.bridge.summary = kv_event
 
                     # TODO: handle misc types here
                     #       better yet, move to event type handler

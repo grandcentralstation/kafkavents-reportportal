@@ -136,6 +136,17 @@ class RPBridge():
                 self.data.testnodes[key] = value
         self.write(file='testnodes', data=self.data.testnodes)
 
+    @property
+    def summary(self, summary):
+        """Summary of test results."""
+        return self.data.summary
+
+    @summary.setter
+    def summary(self, summary):
+        print(f'SUMMARY: {summary}')
+        self.data.summary = summary
+        self.write()
+
     def create_session_store(self):
         """Create the session directory for storing data."""
         self.datastore_dir = f'{self.datastore}/{self.sessionid}'
@@ -146,9 +157,9 @@ class RPBridge():
         """Write the session to disk (or other future)."""
         # TODO: make summary False when dirs are working
         # TODO: make this a lot more efficient than writing all data
-        if not os.path.exists(self.datastore_dir):
-            os.makedirs(self.datastore_dir)
         if file is not None and data is not None:
+            if not os.path.exists(self.datastore_dir):
+                os.makedirs(self.datastore_dir)
             data_filename = f'{self.datastore_dir}/{file}'
             with open(data_filename, "w") as chf:
                 json.dump(data, chf, indent=2, sort_keys=True)
