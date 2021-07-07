@@ -38,6 +38,7 @@ class RPBridge():
         self.datastore = datastore
         self._datastore_file = None
         self._datastore_dir = None
+        self.session_in_progress = False
 
         if restore:
             self.resume(sessionid=sessionid, datastore=datastore,
@@ -50,7 +51,7 @@ class RPBridge():
             self.offset_last = None
             self.launch = None
             self.testnodes = {'None': None}
-
+    '''
     @property
     def datastore_dir(self):
         """Directory name for the datastore."""
@@ -70,7 +71,7 @@ class RPBridge():
     @datastore_file.setter
     def datastore_file(self, datastore_file):
         self._datastore_file = datastore_file
-
+    '''
     @property
     def sessionid(self):
         """Session ID for KV to RP."""
@@ -79,8 +80,8 @@ class RPBridge():
     @sessionid.setter
     def sessionid(self, sessionid):
         self.data.sessionid = sessionid
-        self.write(file='sessionid', data=sessionid)
-
+        #self.write(file='sessionid', data=sessionid)
+    '''
     @property
     def launch(self):
         """RP Launch for this session."""
@@ -134,7 +135,7 @@ class RPBridge():
                 self.data.testnodes = {}
             else:
                 self.data.testnodes[key] = value
-        self.write(file='testnodes', data=self.data.testnodes)
+        #self.write(file='testnodes', data=self.data.testnodes)
 
     @property
     def summary(self, summary):
@@ -143,9 +144,8 @@ class RPBridge():
 
     @summary.setter
     def summary(self, summary):
-        print(f'SUMMARY: {summary}')
         self.data.summary = summary
-        self.write()
+        self.write(summary=True)
 
     def create_session_store(self):
         """Create the session directory for storing data."""
@@ -157,7 +157,7 @@ class RPBridge():
         """Write the session to disk (or other future)."""
         # TODO: make summary False when dirs are working
         # TODO: make this a lot more efficient than writing all data
-        if file is not None and data is not None:
+        if self.session_in_progress and file is not None and data is not None:
             if not os.path.exists(self.datastore_dir):
                 os.makedirs(self.datastore_dir)
             data_filename = f'{self.datastore_dir}/{file}'
@@ -176,8 +176,9 @@ class RPBridge():
             session_data = json.load(dsfh)
             start_offset = session_data['offset_start']
             end_offset = session_data['offset_end']
+            launchid = session_data['launch']
 
-            return start_offset, end_offset
+            return start_offset, end_offset, launchid
 
     def start(self):
         """Start the session."""
@@ -185,17 +186,23 @@ class RPBridge():
         #session_file = f'{self.session_file}'
         #with open(f'{self.datastore_file}', "w") as ch:
         #    json.dump(self.data.__dict__, ch, indent=2, sort_keys=True)
+
         with open(f'{self.datastore}/session.inprogress', 'w') as sfh:
             json.dump(self.sessionid, sfh)
+        self.session_in_progress = True
+
 
     def end(self):
         """End the session."""
         print("RPBRIDGE: ENDING THE SESSION")
+
         self.write(summary=True)
         shutil.rmtree(self.datastore_dir)
         session_file = f'{self.datastore}/session.inprogress'
         if os.path.exists(session_file):
             os.unlink(session_file)
+        self.session_in_progress = False
+ 
 
     @staticmethod
     def recover_session(datastore):
@@ -226,6 +233,6 @@ class RPBridge():
         """Replay a session from start to end."""
         # TODO: replay reads from a session file
         pass
-
+    '''
 
 # TODO: clean up the property getter/setters
