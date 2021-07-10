@@ -24,7 +24,6 @@ from confluent_kafka import TopicPartition
 import urllib3
 
 from kafkavents_reportportal.session import ReportPortalSession
-from kafkavents_reportportal.rpbridge import RPBridge
 from kafkavents_reportportal.kafka import Kafka
 from kafkavents_reportportal.reportportal import ReportPortal
 from kafkavents_reportportal.event import Event
@@ -50,7 +49,7 @@ class KafkaventsReportPortal():
         if not os.path.exists(self.datastore):
             print(f'Creating datastore directory: {self.datastore}')
             os.makedirs(self.datastore)
-        print(f'USING {self.datastore} for datastore')
+        print(f'DATASTORE: {self.datastore}')
 
         self.topic = os.getenv('KV_TOPIC', 'kafkavents')
 
@@ -194,7 +193,7 @@ class KafkaventsReportPortal():
                 # uses a setter to set an entry in the dictionary
                 # not the entire dictionary
                 # FIXME: this should work with a direct assign
-                self.bridge.testnodes = {node_path: suite_id}
+                #session.testnodes = {node_path: suite_id}
                 #print(f'CREATE NODES: {session.testnodes}')
                 if session.testnodes is not None:
                     session.testnodes = {node_path: suite_id}
@@ -208,16 +207,23 @@ class KafkaventsReportPortal():
         print('AUTORECOVER mode is on')
         # check for incomplete session
         resume_sessionid = \
-            RPBridge.recover_session(self.datastore)
+            ReportPortalSession.recover(self.datastore)
 
         resume_sessionid = os.getenv('KV_RESUME_SESSION', resume_sessionid)
         if resume_sessionid is not None:
-            print('RESUMING SESSION')
-            self.bridge = RPBridge(resume_sessionid, datastore=self.datastore,
-                                   topic=self.topic, restore=True)
-            self.listen_offset = self.bridge.offset_last + 1
-            self.session_in_progress = True
-            self.service.launch_id = self.bridge.launch
+            print(f'RESUMING SESSION: {resume_sessionid}')
+            self.sessions[resume_sessionid] = \
+                ReportPortalSession(resume_sessionid,
+                                    datastore=self.datastore,
+                                    topic=self.topic, restore=True)
+            last_offset = self.sessions[resume_sessionid].offset_last
+            if last_offset is not None:
+                self.listen_offset = \
+                    self.sessions[resume_sessionid].offset_last + 1
+                self.session_in_progress = True
+                self.service.launch_id = self.sessions[resume_sessionid].launch
+            else:
+                return None
 
         return resume_sessionid
 
@@ -234,8 +240,8 @@ class KafkaventsReportPortal():
         rerun_launchid = None
         if self.replay:
             self.replay_start, self.replay_end, rerun_launchid = \
-                RPBridge.read_session_offsets(self.replay_sessionid,
-                                              self.datastore)
+                ReportPortalSession.read_offsets(self.replay_sessionid,
+                                                 self.datastore)
             self.listen_offset = self.replay_start
             #rerun = True
             print(f'REPLAY: start {self.replay_start} end {self.replay_end}')
@@ -297,13 +303,8 @@ class KafkaventsReportPortal():
                         self.suite_stack = []
                         #self.bridge.offset_start = message_offset
                         # Start a KV Bridge Session
-                        self.bridge = RPBridge(sessionid,
-                                               topic=self.topic,
-                                               offset_start=message_offset,
-                                               datastore=self.datastore)
-
                         # TODO: remove when the session class handles things
-                        self.sessions[sessionid].bridge = self.bridge
+                        #self.sessions[sessionid].bridge = self.bridge
 
                         launch_name = kv_event.get('name')
                         print(f"Starting launch: {launch_name}")
@@ -321,7 +322,7 @@ class KafkaventsReportPortal():
                                                               rerun=False,
                                                               rerunOf=None,
                                                               attributes=attributes)
-                                self.bridge.launch = launch
+                                #self.bridge.launch = launch
                                 self.sessions[sessionid].launch = launch
                                 success = True
                             except HTTPError as err:
@@ -335,7 +336,7 @@ class KafkaventsReportPortal():
 
                         #self.kv['launch'] = self.bridge.launch
                         # TODO: configurize description ^^^
-                        print('LAUNCH: {}', self.bridge.launch)
+                        print('LAUNCH: {}', self.sessions[sessionid].launch)
                         self.session_in_progress = True
                         #self.bridge.start()
                         #self.bridge.offset_last = message_offset
@@ -346,16 +347,16 @@ class KafkaventsReportPortal():
                             # TODO: handle mid-session restarts
                             continue
                         self.kv['offset_end'] = message_offset
-                        self.bridge.offset_end = message_offset
+                        self.sessions[sessionid].offset_end = message_offset
 
                         launch_name = kv_event.get('name')
                         print(f"Ending launch: {launch_name}")
                         # Finish launch.
-                        self.service.finish_launch(launch=self.bridge.launch,
+                        self.service.finish_launch(launch=self.sessions[sessionid].launch,
                                                    end_time=timestamp())
                         print(self.node_paths)
 
-                        self.bridge.offset_last = message_offset
+                        self.sessions[sessionid].offset_last = message_offset
                         # Close the suites
                         for itemid in reversed(self.suite_stack):
                             self.service.finish_test_item(item_id=itemid,
@@ -363,8 +364,8 @@ class KafkaventsReportPortal():
                                                           status=None)
                             #print(f'CLOSED: {itemid}')
                         self.session_in_progress = False
-                        self.bridge.end()
-                        self.sessions[sessionid].end(event)
+                        #self.bridge.end()
+                        self.sessions[sessionid].end_event(event)
 
                     if event.event_type == "testresult":
                         # session interrupted? read from cache
@@ -378,7 +379,7 @@ class KafkaventsReportPortal():
                         if recovering_session_flag:
                             # Get the int id for the launch
                             url = (f'launch?'
-                                   f'filter.eq.uuid={self.bridge.launch}')
+                                   f'filter.eq.uuid={self.sessions[sessionid].launch}')
                             data = self.reportportal.api_get(url)
                             data = json.loads(data.text)
                             launch_num = data['content'][0]['id']
@@ -422,7 +423,9 @@ class KafkaventsReportPortal():
                                                       self.sessions[sessionid])
 
                         print('Creating a test item entry')
-                        parent_id = self.get_parent_id(nodespace, self.sessions[sessionid])
+                        parent_id = \
+                            self.get_parent_id(nodespace,
+                                               self.sessions[sessionid])
                         # FIXME: add user provided attr key:values
                         item_id = \
                             self.service.start_test_item(
@@ -446,7 +449,7 @@ class KafkaventsReportPortal():
                                                       issue=issue)
 
                         if self.session_in_progress:
-                            self.bridge.offset_last = message_offset
+                            self.sessions[sessionid].offset_last = message_offset
 
                     # TODO: handle misc types here
                     #       better yet, move to event type handler

@@ -175,22 +175,22 @@ class Session:
         print(f'{event.body}')
 
         if event.event_type == 'sessionstart':
-            self.start(event)
+            self.start_event(event)
         if event.event_type == 'sessionend':
-            self.end(event)
+            self.end_event(event)
         if event.event_type == 'testresult':
-            self.testresult(event)
+            self.testresult_event(event)
         if event.event_type == 'summary':
-            self.summary(event)
+            self.summary_event(event)
 
-    def start(self, event):
+    def start_event(self, event):
         print('SESSION.START')
         with open(f'{self.datastore}/session.inprogress', 'w') as sfh:
             json.dump(self.sessionid, sfh)
         self.in_progress = True
         self.offset_start = event.offset
 
-    def end(self, event):
+    def end_event(self, event):
         print('SESSION.END')
         if not self.in_progress:
             return None
@@ -198,7 +198,7 @@ class Session:
         # Write session.datastore file for posterity
         self.write(summary=True)
         # Delete the session directory
-        #shutil.rmtree(self.sessiondir)
+        shutil.rmtree(self.sessiondir)
         session_inprog_file = f'{self.datastore}/session.inprogress'
         if os.path.exists(session_inprog_file):
             os.unlink(session_inprog_file)
@@ -206,11 +206,19 @@ class Session:
         self.offset_end = event.offset
         self.in_progress = False
 
-    def testresult(self, event):
+    def testresult_event(self, event):
         print('SESSION.TESTRESULT')
         if not self.in_progress:
             return None
         self.offset_last = event.offset
+
+    def summary_event(self, event):
+        print('SESSION.SUMMARY')
+        self.summary = event.body.data
+        self.offset_end = event.offset
+        self.offset_last = event.offset
+        print(f'SUMMARY: {event.body.data}')
+        print(f'OFFSET: {event.offset}')
 
     @staticmethod
     def read_offsets(sessionid, datastore):
@@ -227,10 +235,10 @@ class Session:
     # The session store methods
     def write(self, file=None, data=None, summary=True):
         """Write the session to disk (or other future)."""
-        print(f'SESSION.write: file {file} = {data}')
+        #print(f'SESSION.write: file {file} = {data}')
         # TODO: make summary False when dirs are working
         # TODO: make this a lot more efficient than writing all data
-        print(f'Session.write: in_progress {self.in_progress} file {file} data {data}')
+        #print(f'Session.write: in_progress {self.in_progress} file {file} data {data}')
         if self.in_progress and file is not None and data is not None:
             data_filename = f'{self.sessiondir}/{file}'
             if not os.path.exists(self.sessiondir):
@@ -239,12 +247,12 @@ class Session:
                 json.dump(data, chf, indent=2, sort_keys=True)
 
         if summary:
-            print(f'SESSION.write summary file {self.sessionfile}')
+            #print(f'SESSION.write summary file {self.sessionfile}')
             with open(self.sessionfile, "w") as ch:
                 json.dump(self.data.__dict__, ch, indent=2, sort_keys=True)
 
     @staticmethod
-    def recover_session(datastore):
+    def recover(datastore):
         """Recover an incomplete session id."""
         recover_sessionid = None
 
@@ -327,11 +335,3 @@ class ReportPortalSession(Session):
         self.bridge.start()
         self.bridge.offset_last = message_offset
     '''
-
-    def summary(self, event):
-        print('REPORTPORTALSESSION.SUMMARY')
-        self.bridge.summary = event.body.data
-        self.bridge.offset_end = event.offset
-        self.bridge.offset_last = event.offset
-        print(f'SUMMARY: {event.body.data}')
-        print(f'OFFSET: {event.offset}')
