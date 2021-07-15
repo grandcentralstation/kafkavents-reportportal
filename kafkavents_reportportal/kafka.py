@@ -14,7 +14,7 @@
 # along with this software. If not, see <http://www.gnu.org/licenses/>.
 #
 """Kafka connection module."""
-from confluent_kafka import Consumer, TopicPartition
+from confluent_kafka import Consumer
 
 
 class Kafka:

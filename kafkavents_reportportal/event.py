@@ -127,7 +127,7 @@ class Event:
     @property
     def body(self):
         if self._body is None:
-            body = self.packet.get('event', None)
+            body = self.packet.get('body', None)
             if body is not None:
                 self._body = Body(body)
             else:
