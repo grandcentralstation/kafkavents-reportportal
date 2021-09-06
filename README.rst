@@ -1,17 +1,21 @@
 Kafkavents ReportPortal Bridge
+==============================
 
-Temp readme doc text
+Using the Container
+-------------------
 
-```
-python3 kafkavents_reportportal.py
+Update kafka.json file with latest info::
 
-podman secret create kafka_secret kafkavents/kafka.json
+    podman secret create kafka_secret kafkavents/kafka.json
 
-podman build --rm=true -t kafkavents-reportportal:latest .
+Build the container (temporary)::
 
-podman run -it --secret kafka_secret --env-file=kafkavents/env.bash  \
+    podman build --rm=true -t kafkavents-reportportal:latest .
+
+Run the container::
+    podman run -it --secret kafka_secret --env-file=kafkavents/env.bash  \
 --rm -v /path/to/kafkavents-reportportal/kafkavents:/usr/local/etc/kafkavents:Z \
 localhost/kafkavents-reportportal
-```
+
 
 [![Docker Repository on Quay](https://quay.io/repository/loadtheaccumulator/kafkavents-reportportal/status "Docker Repository on Quay")](https://quay.io/repository/loadtheaccumulator/kafkavents-reportportal)
